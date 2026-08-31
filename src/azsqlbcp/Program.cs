@@ -1,11 +1,17 @@
 using AzSqlBcp.Commands;
-using Spectre.Console.Cli;
+using AzSqlBcp.Services;
 
-var app = new CommandApp<CopyCommand>();
-app.Configure(config =>
+public partial class Program
 {
-    config.SetApplicationName("azsqlbcp");
-    config.ValidateExamples();
-});
+    static partial void AddServices(IServiceCollection services)
+    {
+        services.AddSingleton<TokenCache>();
+        services.AddSingleton<BulkCopyService>();
+    }
 
-return await app.RunAsync(args);
+    static partial void ConfigureApp(AppServiceConfig appServiceConfig)
+    {
+        appServiceConfig.SetApplicationName("azsqlbcp");
+        appServiceConfig.SetDefaultCommand<CopyCommand>();
+    }
+}

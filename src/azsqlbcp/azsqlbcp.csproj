@@ -13,6 +13,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="azsqlbcp.Tests" />
+    <Using Include="AzSqlBcp.Services.BulkCopy" />
+    <Using Include="AzSqlBcp.Services.Checkpoint" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Azure.Identity" />
     <PackageReference Include="Devlead.Console" />
     <PackageReference Include="Microsoft.Data.SqlClient" />

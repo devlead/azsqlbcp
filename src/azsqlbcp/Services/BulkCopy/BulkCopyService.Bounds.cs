@@ -1,7 +1,7 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 
-namespace AzSqlBcp.Services;
+namespace AzSqlBcp.Services.BulkCopy;
 
 public sealed partial class BulkCopyService
 {
@@ -32,8 +32,11 @@ public sealed partial class BulkCopyService
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(0))
             return (null, null, 0);
 
-        return (reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
+        return (ReadPartitionBound(reader, 0), ReadPartitionBound(reader, 1), ReadPartitionBound(reader, 2));
     }
+
+    private static long ReadPartitionBound(SqlDataReader reader, int ordinal) =>
+        Convert.ToInt64(reader.GetValue(ordinal));
 
     private static async Task<long> GetCountAsync(
         string server,

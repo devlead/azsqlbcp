@@ -47,8 +47,33 @@ public sealed class CopySettings : CommandSettings
     [CommandOption("--parallelism <N>")]
     public int Parallelism { get; init; } = 6;
 
+    [CommandOption("--partitions <N>")]
+    public int? Partitions { get; init; }
+
+    [CommandOption("--partition-strategy <STRATEGY>")]
+    public PartitionStrategy PartitionStrategy { get; init; } = PartitionStrategy.IdRange;
+
     [CommandOption("--batch-size <N>")]
     public int BatchSize { get; init; } = 2_000_000;
+
+    [CommandOption("--checkpoint-file <PATH>")]
+    public string? CheckpointFile { get; init; }
+
+    [CommandOption("--resume")]
+    public bool Resume { get; init; }
+
+    [CommandOption("--force")]
+    public bool Force { get; init; }
+
+    [CommandOption("--max-retries <N>")]
+    public int MaxRetries { get; init; } = 5;
+
+    [CommandOption("--retry-base-delay-ms <N>")]
+    public int RetryBaseDelayMs { get; init; } = 2000;
+
+    public int EffectivePartitions => Partitions ?? Parallelism;
+
+    public bool IsResumable => !string.IsNullOrWhiteSpace(CheckpointFile);
 
     public override ValidationResult Validate()
     {
@@ -69,6 +94,8 @@ public sealed class CopySettings : CommandSettings
         {
             if (!string.IsNullOrWhiteSpace(PartitionColumn))
                 return ValidationResult.Error("Do not pass --partition-column with --no-partition-column.");
+            if (IsResumable)
+                return ValidationResult.Error("Resumable mode requires --partition-column (do not use --no-partition-column).");
         }
         else if (string.IsNullOrWhiteSpace(PartitionColumn))
         {
@@ -77,12 +104,25 @@ public sealed class CopySettings : CommandSettings
 
         if (Parallelism < 1)
             return ValidationResult.Error("--parallelism must be >= 1.");
+        if (EffectivePartitions < 1)
+            return ValidationResult.Error("--partitions must be >= 1.");
         if (BatchSize < 1)
             return ValidationResult.Error("--batch-size must be >= 1.");
         if (SourcePort is < 1 or > 65535)
             return ValidationResult.Error("--source-port must be between 1 and 65535.");
         if (TargetPort is < 1 or > 65535)
             return ValidationResult.Error("--target-port must be between 1 and 65535.");
+
+        if (Resume && Force)
+            return ValidationResult.Error("Do not pass --resume with --force.");
+
+        if ((Resume || Force) && !IsResumable)
+            return ValidationResult.Error("--resume and --force require --checkpoint-file.");
+
+        if (MaxRetries < 0)
+            return ValidationResult.Error("--max-retries must be >= 0.");
+        if (RetryBaseDelayMs < 0)
+            return ValidationResult.Error("--retry-base-delay-ms must be >= 0.");
 
         return ValidationResult.Success();
     }

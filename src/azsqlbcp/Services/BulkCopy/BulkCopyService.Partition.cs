@@ -1,10 +1,71 @@
 using System.Data;
+using AzSqlBcp.Services;
 using Microsoft.Data.SqlClient;
 
-namespace AzSqlBcp.Services;
+namespace AzSqlBcp.Services.BulkCopy;
 
 public sealed partial class BulkCopyService
 {
+    internal static async Task<long> GetRangeCountAsync(
+        string server,
+        string database,
+        string qualifiedTable,
+        string partitionQuoted,
+        long lo,
+        long hi,
+        string accessToken,
+        int port,
+        bool readOnlyIntent,
+        bool trustServerCertificate,
+        CancellationToken cancellationToken)
+    {
+        await using var conn = CreateConnection(server, database, accessToken, port, readOnlyIntent, trustServerCertificate);
+        await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var cmd = new SqlCommand(
+            $"SELECT COUNT_BIG(*) FROM {qualifiedTable} WHERE {partitionQuoted} >= @lo AND {partitionQuoted} <= @hi",
+            conn)
+        {
+            CommandType = CommandType.Text,
+            CommandTimeout = 500000
+        };
+
+        cmd.Parameters.AddWithValue("@lo", lo);
+        cmd.Parameters.AddWithValue("@hi", hi);
+
+        var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return result is long count ? count : Convert.ToInt64(result);
+    }
+
+    internal static async Task DeletePartitionSliceAsync(
+        string server,
+        string database,
+        string qualifiedTable,
+        string partitionQuoted,
+        long lo,
+        long hi,
+        string accessToken,
+        int port,
+        bool trustServerCertificate,
+        CancellationToken cancellationToken)
+    {
+        await using var conn = CreateConnection(server, database, accessToken, port, trustServerCertificate: trustServerCertificate);
+        await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var cmd = new SqlCommand(
+            $"DELETE FROM {qualifiedTable} WHERE {partitionQuoted} >= @lo AND {partitionQuoted} <= @hi",
+            conn)
+        {
+            CommandType = CommandType.Text,
+            CommandTimeout = 500000
+        };
+
+        cmd.Parameters.AddWithValue("@lo", lo);
+        cmd.Parameters.AddWithValue("@hi", hi);
+
+        await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task CopyPartitionAsync(
         string sourceServer,
         string sourceDatabase,
@@ -22,7 +83,9 @@ public sealed partial class BulkCopyService
         bool sourceTrustServerCertificate,
         bool targetTrustServerCertificate,
         CopyProgressReporter progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool useTableLock = true,
+        bool finalizeProgress = true)
     {
         await using SqlConnection
             sourceConn = CreateConnection(
@@ -56,14 +119,17 @@ public sealed partial class BulkCopyService
             .ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken)
             .ConfigureAwait(false);
 
-        var notifyAfter = Math.Min(batchSize, 100_000);
+        var notifyAfter = Math.Min(batchSize, 50_000);
+        var options = useTableLock
+            ? SqlBulkCopyOptions.KeepIdentity | SqlBulkCopyOptions.TableLock
+            : SqlBulkCopyOptions.KeepIdentity;
 
-        using var bcp = new SqlBulkCopy(targetConn, SqlBulkCopyOptions.KeepIdentity|SqlBulkCopyOptions.TableLock, null)
+        using var bcp = new SqlBulkCopy(targetConn, options, null)
         {
             DestinationTableName = targetQualified,
             BatchSize = batchSize,
             NotifyAfter = notifyAfter,
-            BulkCopyTimeout = 3600,
+            BulkCopyTimeout = 7200,
             EnableStreaming = true
         };
 
@@ -77,19 +143,22 @@ public sealed partial class BulkCopyService
 
         await bcp.WriteToServerAsync(reader, cancellationToken).ConfigureAwait(false);
 
-        progress.Complete(partitionIndex, bcp.RowsCopied64);
+        if (finalizeProgress)
+            progress.Complete(partitionIndex, bcp.RowsCopied64);
+        else
+            progress.Report(partitionIndex, bcp.RowsCopied64);
     }
 
-    internal static List<IdRange> BuildRanges(long minId, long maxId, int parallelism)
+    internal static List<IdRange> BuildRanges(long minId, long maxId, int partitions)
     {
-        if (parallelism < 1)
-            throw new ArgumentOutOfRangeException(nameof(parallelism));
+        if (partitions < 1)
+            throw new ArgumentOutOfRangeException(nameof(partitions));
 
         var total = unchecked(maxId - minId + 1);
         if (total <= 0)
             return [new IdRange(0, minId, maxId)];
 
-        var parts = (int)Math.Min(parallelism, total);
+        var parts = (int)Math.Min(partitions, total);
         var ranges = new List<IdRange>(parts);
         var size = total / parts;
         var remainder = total % parts;

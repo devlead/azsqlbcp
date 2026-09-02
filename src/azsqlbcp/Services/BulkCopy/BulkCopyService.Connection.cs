@@ -1,10 +1,10 @@
 using Microsoft.Data.SqlClient;
 
-namespace AzSqlBcp.Services;
+namespace AzSqlBcp.Services.BulkCopy;
 
 public sealed partial class BulkCopyService
 {
-    private static SqlConnection CreateConnection(
+    internal static SqlConnection CreateConnection(
         string server,
         string database,
         string accessToken,
@@ -37,7 +37,7 @@ public sealed partial class BulkCopyService
         return builder.ConnectionString;
     }
 
-    private static string QuoteTable(string table)
+    internal static string QuoteTable(string table)
     {
         var parts = table.Split('.', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         return parts.Length == 2
@@ -45,6 +45,6 @@ public sealed partial class BulkCopyService
             : $"{QuoteIdent("dbo")}.{QuoteIdent(parts[0])}";
     }
 
-    private static string QuoteIdent(string name) =>
+    internal static string QuoteIdent(string name) =>
         "[" + name.Replace("]", "]]", StringComparison.Ordinal) + "]";
 }

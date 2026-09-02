@@ -1,53 +1,41 @@
+using AzSqlBcp.Commands;
+using AzSqlBcp.Services;
 using Spectre.Console;
 
-namespace AzSqlBcp.Services;
+namespace AzSqlBcp.Services.BulkCopy;
 
 public sealed partial class BulkCopyService(TokenCache tokenCache)
 {
-    public async Task CopyAsync(
-        string sourceServer,
-        string sourceDatabase,
-        string sourceTable,
-        string targetServer,
-        string targetDatabase,
-        string targetTable,
-        string? partitionColumn,
-        bool noPartitionColumn,
-        bool sourceReadOnly,
-        int sourcePort,
-        int targetPort,
-        bool sourceTrustServerCertificate,
-        bool targetTrustServerCertificate,
-        int parallelism,
-        int batchSize,
-        CancellationToken cancellationToken = default)
+    private async Task CopyLegacyAsync(CopySettings settings, CancellationToken cancellationToken)
     {
-        var sourceQualified = QuoteTable(sourceTable);
-        var targetQualified = QuoteTable(targetTable);
+        var sourceQualified = QuoteTable(settings.SourceTable);
+        var targetQualified = QuoteTable(settings.TargetTable);
 
         var token = await tokenCache.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
 
         AnsiConsole.MarkupLine($"[grey]Truncating[/] {Markup.Escape(targetQualified)}...");
         await TruncateAsync(
-                targetServer, targetDatabase, targetQualified, token, targetPort, targetTrustServerCertificate, cancellationToken)
+                settings.TargetServer, settings.TargetDatabase, targetQualified, token, settings.TargetPort,
+                settings.TargetTrustServerCertificate, cancellationToken)
             .ConfigureAwait(false);
         AnsiConsole.MarkupLine("[grey]Truncate complete.[/]");
 
-        if (noPartitionColumn)
+        if (settings.NoPartitionColumn)
         {
             await CopyWithoutPartitionAsync(
-                sourceServer, sourceDatabase, sourceQualified,
-                targetServer, targetDatabase, targetQualified,
-                batchSize, token, sourceReadOnly, sourcePort, targetPort,
-                sourceTrustServerCertificate, targetTrustServerCertificate, cancellationToken).ConfigureAwait(false);
+                settings.SourceServer, settings.SourceDatabase, sourceQualified,
+                settings.TargetServer, settings.TargetDatabase, targetQualified,
+                settings.BatchSize, token, settings.SourceReadOnly, settings.SourcePort, settings.TargetPort,
+                settings.SourceTrustServerCertificate, settings.TargetTrustServerCertificate, cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
-        var partitionQuoted = QuoteIdent(partitionColumn!);
+        var partitionQuoted = QuoteIdent(settings.PartitionColumn!);
         AnsiConsole.MarkupLine($"[grey]Reading bounds/count for[/] {Markup.Escape(sourceQualified)}...");
         var (minId, maxId, totalRowCount) = await GetBoundsAsync(
-            sourceServer, sourceDatabase, sourceQualified, partitionQuoted, token, sourcePort, sourceReadOnly,
-            sourceTrustServerCertificate, cancellationToken)
+            settings.SourceServer, settings.SourceDatabase, sourceQualified, partitionQuoted, token,
+            settings.SourcePort, settings.SourceReadOnly, settings.SourceTrustServerCertificate, cancellationToken)
             .ConfigureAwait(false);
 
         if (minId is null || maxId is null || totalRowCount == 0)
@@ -56,14 +44,14 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
             return;
         }
 
-        var ranges = BuildRanges(minId.Value, maxId.Value, parallelism);
+        var ranges = BuildRanges(minId.Value, maxId.Value, settings.Parallelism);
         AnsiConsole.MarkupLine(
             $"[grey]Copying[/] {Markup.Escape(sourceQualified)} [grey]->[/] {Markup.Escape(targetQualified)} " +
-            $"[grey]({ranges.Count} partitions, {totalRowCount:N0} rows, ids {minId}..{maxId}, batch {batchSize:N0})[/]");
+            $"[grey]({ranges.Count} partitions, {totalRowCount:N0} rows, ids {minId}..{maxId}, batch {settings.BatchSize:N0})[/]");
 
         var options = new ParallelOptions
         {
-            MaxDegreeOfParallelism = parallelism,
+            MaxDegreeOfParallelism = settings.Parallelism,
             CancellationToken = cancellationToken
         };
 
@@ -77,8 +65,8 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
                 new ProgressBarColumn(),
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
-                new ElapsedTimeColumn(),
-                new SpinnerColumn())
+                new FrozenElapsedTimeColumn(),
+                new SpinnerColumn { PendingText = " " })
             .StartAsync(async ctx =>
             {
                 progress = new CopyProgressReporter(ctx, ranges, totalRowCount, minId.Value, maxId.Value);
@@ -87,11 +75,11 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
                 {
                     var workerToken = await tokenCache.GetAccessTokenAsync(ct).ConfigureAwait(false);
                     await CopyPartitionAsync(
-                        sourceServer, sourceDatabase, sourceQualified,
-                        targetServer, targetDatabase, targetQualified,
-                        partitionQuoted, range, batchSize, workerToken, sourceReadOnly, sourcePort, targetPort,
-                        sourceTrustServerCertificate, targetTrustServerCertificate, progress, ct)
-                        .ConfigureAwait(false);
+                        settings.SourceServer, settings.SourceDatabase, sourceQualified,
+                        settings.TargetServer, settings.TargetDatabase, targetQualified,
+                        partitionQuoted, range, settings.BatchSize, workerToken, settings.SourceReadOnly,
+                        settings.SourcePort, settings.TargetPort, settings.SourceTrustServerCertificate,
+                        settings.TargetTrustServerCertificate, progress, ct).ConfigureAwait(false);
                 }).ConfigureAwait(false);
             }).ConfigureAwait(false);
 
@@ -141,8 +129,8 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
                 new ProgressBarColumn(),
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
-                new ElapsedTimeColumn(),
-                new SpinnerColumn())
+                new FrozenElapsedTimeColumn(),
+                new SpinnerColumn { PendingText = " " })
             .StartAsync(async ctx =>
             {
                 progress = new CopyProgressReporter(ctx, ranges, totalRowCount, minId: 0, maxId: 0);

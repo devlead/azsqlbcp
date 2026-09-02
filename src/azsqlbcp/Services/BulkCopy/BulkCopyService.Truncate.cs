@@ -1,7 +1,7 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 
-namespace AzSqlBcp.Services;
+namespace AzSqlBcp.Services.BulkCopy;
 
 public sealed partial class BulkCopyService
 {

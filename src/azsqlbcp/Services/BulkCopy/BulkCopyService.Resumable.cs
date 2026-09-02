@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using AzSqlBcp.Commands;
 using AzSqlBcp.Services;
+using Microsoft.Data.SqlClient;
 using Spectre.Console;
 
 namespace AzSqlBcp.Services.BulkCopy;
@@ -75,7 +77,7 @@ public sealed partial class BulkCopyService
         }
 
         await ReconcileCheckpointAsync(
-            settings, checkpoint, sourceQualified, targetQualified, partitionQuoted, store, cancellationToken)
+            settings, checkpoint, targetQualified, partitionQuoted, store, cancellationToken)
             .ConfigureAwait(false);
 
         var pending = checkpoint.Plan.Ranges
@@ -117,7 +119,7 @@ public sealed partial class BulkCopyService
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new FrozenElapsedTimeColumn(),
-                new SpinnerColumn())
+                new SpinnerColumn { PendingText = " " })
             .StartAsync(async ctx =>
             {
                 progress = new CopyProgressReporter(ctx, checkpoint.Plan.Ranges, checkpoint.Plan.TotalRowCount);
@@ -236,19 +238,19 @@ public sealed partial class BulkCopyService
         store.Save(checkpoint);
     }
 
+    /// <summary>
+    /// Seconds allowed for each reconcile COUNT_BIG. On timeout the partition is left for re-copy.
+    /// </summary>
+    private const int ReconcileCountTimeoutSeconds = 300;
+
     private async Task ReconcileCheckpointAsync(
         CopySettings settings,
         CopyCheckpoint checkpoint,
-        string sourceQualified,
         string targetQualified,
         string partitionQuoted,
         CopyCheckpointStore store,
         CancellationToken cancellationToken)
     {
-        var toReconcile = checkpoint.Plan.Ranges
-            .Where(r => r.Status is PartitionStatus.InProgress or PartitionStatus.Failed && r.ExpectedRows > 0)
-            .ToList();
-
         var changed = false;
         foreach (var entry in checkpoint.Plan.Ranges)
         {
@@ -264,6 +266,12 @@ public sealed partial class BulkCopyService
             }
         }
 
+        var toReconcile = checkpoint.Plan.Ranges
+            .Where(r =>
+                (r.Status is PartitionStatus.InProgress or PartitionStatus.Failed) &&
+                r.ExpectedRows > 0)
+            .ToList();
+
         if (toReconcile.Count == 0)
         {
             if (changed)
@@ -271,8 +279,21 @@ public sealed partial class BulkCopyService
             return;
         }
 
+        // Default resume trusts checkpoint status and re-copies InProgress/Failed via delete+copy.
+        // Optional --reconcile recovers the rare case where copy+verify finished but Completed was not saved.
+        if (!settings.Reconcile)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Skipping count reconciliation for[/] {toReconcile.Count} in-progress partition(s) " +
+                "[grey](pass --reconcile to verify); will delete and re-copy.[/]");
+            if (changed)
+                store.Save(checkpoint);
+            return;
+        }
+
         AnsiConsole.MarkupLine(
-            $"[grey]Reconciling[/] {toReconcile.Count} in-progress partition(s) (count verification)...");
+            $"[grey]Reconciling[/] {toReconcile.Count} in-progress partition(s) " +
+            $"[grey](target COUNT_BIG, timeout {ReconcileCountTimeoutSeconds}s each)...[/]");
 
         var token = await tokenCache.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
         var semaphore = new SemaphoreSlim(Math.Min(4, settings.Parallelism));
@@ -280,29 +301,43 @@ public sealed partial class BulkCopyService
         var tasks = toReconcile.Select(async entry =>
         {
             await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var sw = Stopwatch.StartNew();
             try
             {
-                var targetCount = await GetRangeCountAsync(
-                    settings.TargetServer, settings.TargetDatabase, targetQualified, partitionQuoted,
-                    entry.Lo, entry.Hi, token, settings.TargetPort, readOnlyIntent: false,
-                    settings.TargetTrustServerCertificate, cancellationToken).ConfigureAwait(false);
+                AnsiConsole.MarkupLine(
+                    $"[grey]Reconciling P{entry.Index}[/] [{entry.Lo}-{entry.Hi}] " +
+                    $"[grey](expected {entry.ExpectedRows:N0})...[/]");
+
+                long targetCount;
+                try
+                {
+                    targetCount = await GetRangeCountAsync(
+                        settings.TargetServer, settings.TargetDatabase, targetQualified, partitionQuoted,
+                        entry.Lo, entry.Hi, token, settings.TargetPort, readOnlyIntent: false,
+                        settings.TargetTrustServerCertificate, cancellationToken,
+                        ReconcileCountTimeoutSeconds).ConfigureAwait(false);
+                }
+                catch (SqlException ex) when (IsCommandTimeout(ex))
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]P{entry.Index} reconcile timed out[/] after {sw.Elapsed.TotalSeconds:N0}s; will re-copy");
+                    return false;
+                }
 
                 if (targetCount != entry.ExpectedRows)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[grey]P{entry.Index} not complete[/] " +
+                        $"(target {targetCount:N0}/{entry.ExpectedRows:N0}, {sw.Elapsed.TotalSeconds:N0}s); will re-copy");
                     return false;
+                }
 
-                var sourceCount = await GetRangeCountAsync(
-                    settings.SourceServer, settings.SourceDatabase, sourceQualified, partitionQuoted,
-                    entry.Lo, entry.Hi, token, settings.SourcePort, settings.SourceReadOnly,
-                    settings.SourceTrustServerCertificate, cancellationToken).ConfigureAwait(false);
-
-                if (sourceCount != targetCount)
-                    return false;
-
+                // Target match is enough on resume: source was frozen for the job plan.
                 entry.Status = PartitionStatus.Completed;
                 entry.RowsCopied = targetCount;
                 entry.CompletedUtc = DateTimeOffset.UtcNow;
                 AnsiConsole.MarkupLine(
-                    $"[grey]Partition P{entry.Index} already complete[/] ({targetCount:N0} rows)");
+                    $"[grey]P{entry.Index} already complete[/] ({targetCount:N0} rows, {sw.Elapsed.TotalSeconds:N0}s)");
                 return true;
             }
             finally
@@ -319,6 +354,10 @@ public sealed partial class BulkCopyService
             store.Save(checkpoint);
     }
 
+    private static bool IsCommandTimeout(SqlException exception) =>
+        exception.Number == -2 ||
+        exception.Errors.Cast<SqlError>().Any(e => e.Number == -2);
+
     private async Task<bool> ExecutePartitionWithRetryAsync(
         CopySettings settings,
         CopyCheckpoint checkpoint,
@@ -334,6 +373,7 @@ public sealed partial class BulkCopyService
         {
             entry.Attempts++;
             entry.Status = PartitionStatus.InProgress;
+            progress.Start(entry.Index);
             store.Save(checkpoint);
 
             try

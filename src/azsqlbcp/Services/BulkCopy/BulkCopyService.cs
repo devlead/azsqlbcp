@@ -66,7 +66,7 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new FrozenElapsedTimeColumn(),
-                new SpinnerColumn())
+                new SpinnerColumn { PendingText = " " })
             .StartAsync(async ctx =>
             {
                 progress = new CopyProgressReporter(ctx, ranges, totalRowCount, minId.Value, maxId.Value);
@@ -130,7 +130,7 @@ public sealed partial class BulkCopyService(TokenCache tokenCache)
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new FrozenElapsedTimeColumn(),
-                new SpinnerColumn())
+                new SpinnerColumn { PendingText = " " })
             .StartAsync(async ctx =>
             {
                 progress = new CopyProgressReporter(ctx, ranges, totalRowCount, minId: 0, maxId: 0);

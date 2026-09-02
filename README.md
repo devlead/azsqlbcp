@@ -46,6 +46,7 @@ azsqlbcp \
 | `--batch-size`                      | `SqlBulkCopy` batch size (default: 2000000)                                   |
 | `--checkpoint-file`                 | Enable resumable mode; JSON checkpoint path                                   |
 | `--resume`                          | Continue from checkpoint (skip truncate)                                      |
+| `--reconcile`                       | With `--resume`: verify in-progress partitions via target COUNT (slow)        |
 | `--force`                           | Truncate target and restart checkpoint from scratch                           |
 | `--max-retries`                     | Transient retries per partition (default: 5)                                  |
 | `--retry-base-delay-ms`             | Retry backoff base in ms (default: 2000)                                      |
@@ -132,7 +133,8 @@ When `--checkpoint-file` is set:
 - Partition boundaries and expected row counts are stored in the checkpoint (immutable plan)
 - Each partition is copied idempotently: delete target slice → bulk copy → verify counts
 - Transient network/SQL errors retry per partition with exponential backoff
-- Completed partitions are skipped on `--resume`; only pending/failed partitions re-run
+- Completed partitions are skipped on `--resume`; pending/in-progress/failed partitions are deleted and re-copied
+- By default `--resume` skips expensive COUNT reconciliation; pass `--reconcile` only if you need to recover partitions that finished verify but were not marked completed
 - When change tracking is enabled on the source database **and** table, the checkpoint records `CHANGE_TRACKING_CURRENT_VERSION()` as a sync baseline for downstream incremental catch-up
 
 ## Authentication

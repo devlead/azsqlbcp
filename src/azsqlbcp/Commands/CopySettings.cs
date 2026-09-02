@@ -62,6 +62,9 @@ public sealed class CopySettings : CommandSettings
     [CommandOption("--resume")]
     public bool Resume { get; init; }
 
+    [CommandOption("--reconcile")]
+    public bool Reconcile { get; init; }
+
     [CommandOption("--force")]
     public bool Force { get; init; }
 
@@ -118,6 +121,9 @@ public sealed class CopySettings : CommandSettings
 
         if ((Resume || Force) && !IsResumable)
             return ValidationResult.Error("--resume and --force require --checkpoint-file.");
+
+        if (Reconcile && !Resume)
+            return ValidationResult.Error("--reconcile requires --resume.");
 
         if (MaxRetries < 0)
             return ValidationResult.Error("--max-retries must be >= 0.");

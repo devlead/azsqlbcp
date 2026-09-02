@@ -17,7 +17,8 @@ public sealed partial class BulkCopyService
         int port,
         bool readOnlyIntent,
         bool trustServerCertificate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int commandTimeoutSeconds = 500_000)
     {
         await using var conn = CreateConnection(server, database, accessToken, port, readOnlyIntent, trustServerCertificate);
         await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -27,7 +28,7 @@ public sealed partial class BulkCopyService
             conn)
         {
             CommandType = CommandType.Text,
-            CommandTimeout = 500000
+            CommandTimeout = commandTimeoutSeconds
         };
 
         cmd.Parameters.AddWithValue("@lo", lo);
@@ -87,6 +88,9 @@ public sealed partial class BulkCopyService
         bool useTableLock = true,
         bool finalizeProgress = true)
     {
+        var partitionIndex = range?.Index ?? 0;
+        progress.Start(partitionIndex);
+
         await using SqlConnection
             sourceConn = CreateConnection(
                 sourceServer, sourceDatabase, accessToken, sourcePort, sourceReadOnly, sourceTrustServerCertificate),
@@ -95,8 +99,6 @@ public sealed partial class BulkCopyService
 
         await sourceConn.OpenAsync(cancellationToken).ConfigureAwait(false);
         await targetConn.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        var partitionIndex = range?.Index ?? 0;
         var commandText = partitionQuoted is null || range is null
             ? $"SELECT * FROM {sourceQualified}"
             : $"SELECT * FROM {sourceQualified} WHERE {partitionQuoted} >= @lo AND {partitionQuoted} <= @hi";

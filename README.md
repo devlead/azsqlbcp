@@ -1,5 +1,7 @@
 # azsqlbcp
 
+[![NuGet](https://img.shields.io/nuget/v/azsqlbcp.svg)](https://www.nuget.org/packages/azsqlbcp)
+
 Azure SQL Bulk Copy .NET global tool. Copy a table between two Azure SQL databases (optionally partitioned and parallel) using `SqlBulkCopy` and Microsoft Entra authentication.
 
 ## Install

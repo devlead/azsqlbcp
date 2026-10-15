@@ -8,7 +8,7 @@
 Setup<BuildData>(
     static context =>
     {
-        InstallTool("dotnet:https://api.nuget.org/v3/index.json?package=DPI&version=2026.5.18.419");
+        InstallTool("dotnet:https://api.nuget.org/v3/index.json?package=DPI&version=2026.10.15.520");
 
         var buildDate = DateTime.UtcNow;
         var runNumber = GitHubActions.IsRunningOnGitHubActions

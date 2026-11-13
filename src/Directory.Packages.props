@@ -5,7 +5,7 @@
   <ItemGroup>
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Devlead.Console" Version="2026.11.12.1057" />
-    <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.2" />
     <PackageVersion Include="xunit.v3" Version="4.0.3" />
   </ItemGroup>
   <!-- Security pin: Microsoft.Data.SqlClient 7.1.1 pulls vulnerable System.Security.Cryptography.Pkcs 9.0.18 (GHSA-846f-f764-76mx, GHSA-2fmv-rv2c-59x7) -->
